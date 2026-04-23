@@ -1,10 +1,13 @@
-const { default: makeWASocket, DisconnectReason, useMultiFileAuthState, makeCacheableSignalKeyStore } = require('@whiskeysockets/baileys');
+const { default: makeWASocket, DisconnectReason, useMultiFileAuthState } = require('@whiskeysockets/baileys');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const { Redis } = require('@upstash/redis');
 const qrcode = require('qrcode-terminal');
 const pino = require('pino');
 const fs = require('fs');
 const path = require('path');
+const http = require('http');
+
+http.createServer((req, res) => res.end('Bot is running')).listen(process.env.PORT || 3000);
 
 const redis = new Redis({
     url: process.env.UPSTASH_REDIS_REST_URL,
@@ -35,6 +38,60 @@ async function connectToWhatsApp() {
 
     const { state, saveCreds } = await useMultiFileAuthState(authDir);
 
+    const sock = makeWASocket({
+        auth: state,
+        printQRInTerminal: true,
+        logger: pino({ level: 'silent' })
+    });
+
+    sock.ev.on('creds.update', async () => {
+        await saveCreds();
+        const creds = JSON.parse(fs.readFileSync(path.join(authDir, 'creds.json'), 'utf8'));
+        await saveAuthToRedis(creds);
+    });
+
+    sock.ev.on('connection.update', (update) => {
+        const { connection, lastDisconnect, qr } = update;
+        if (qr) {
+            console.log('סרוק את ה-QR הזה בווצאפ:');
+            qrcode.generate(qr, { small: true });
+        }
+        if (connection === 'close') {
+            const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
+            if (shouldReconnect) connectToWhatsApp();
+        } else if (connection === 'open') {
+            console.log('מחובר לווצאפ בהצלחה!');
+        }
+    });
+
+    sock.ev.on('messages.upsert', async ({ messages }) => {
+        const msg = messages[0];
+        if (!msg.message || msg.key.fromMe) return;
+
+        const chatId = msg.key.remoteJid;
+        const text = msg.message.conversation ||
+                     msg.message.extendedTextMessage?.text || '';
+        if (!text) return;
+
+        try {
+            if (!conversations.has(chatId)) {
+                conversations.set(chatId, model.startChat({
+                    history: [],
+                    systemInstruction: 'אתה עוזר אישי חכם ומועיל. ענה תמיד בעברית אלא אם המשתמש כותב בשפה אחרת. היה קצר וברור.'
+                }));
+            }
+            const chat = conversations.get(chatId);
+            const result = await chat.sendMessage(text);
+            const response = result.response.text();
+            await sock.sendMessage(chatId, { text: response });
+        } catch (error) {
+            console.error('שגיאה:', error);
+            await sock.sendMessage(chatId, { text: 'מצטער, הייתה שגיאה. נסה שוב.' });
+        }
+    });
+}
+
+connectToWhatsApp();
     const sock = makeWASocket({
         auth: state,
         printQRInTerminal: true,
