@@ -53,11 +53,13 @@ async function connectToWhatsApp() {
     const { state, saveCreds } = await useMultiFileAuthState(authDir);
 
     status = 'connecting';
-    const sock = makeWASocket({
-        auth: state,
-        printQRInTerminal: false,
-        logger: pino({ level: 'silent' })
-    });
+const sock = makeWASocket({
+    auth: state,
+    printQRInTerminal: true,
+    logger: pino({ level: 'silent' }),
+    browser: ['Chrome', 'Chrome', '120.0.0.0'],
+    connectTimeoutMs: 60000,
+});
 
     sock.ev.on('creds.update', saveCreds);
 
